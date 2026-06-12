@@ -160,6 +160,7 @@ function processLogo(file) {
   });
 }
 const PAGE_DOODLES = [
+  // edges
   { e: "\u2B50", top: "30%", left: "-1.5%", r: -12 },
   { e: "\u{1F58D}\uFE0F", top: "47%", left: "-2%", r: 18 },
   { e: "\u{1F3A8}", top: "62%", left: "1%", r: -8 },
@@ -167,8 +168,51 @@ const PAGE_DOODLES = [
   { e: "\u{1F338}", top: "26%", right: "-1.5%", r: 14 },
   { e: "\u{1F9F1}", top: "44%", right: "-2%", r: -10 },
   { e: "\u{1F337}", top: "66%", right: "-1.5%", r: 8 },
-  { e: "\u2601\uFE0F", top: "82%", right: "-1%", r: -6 }
+  { e: "\u270F\uFE0F", top: "82%", right: "-1%", r: -6 },
+  // faint background stickers scattered across the page
+  { e: "\u{1F34E}", top: "20%", left: "32%", r: -10, op: 0.5 },
+  { e: "\u{1F4DA}", top: "21%", left: "62%", r: 8, op: 0.5 },
+  { e: "\u2702\uFE0F", top: "38%", left: "47%", r: -14, op: 0.45 },
+  { e: "\u{1F4D0}", top: "40%", left: "20%", r: 12, op: 0.45 },
+  { e: "\u{1F522}", top: "55%", left: "70%", r: -6, op: 0.5 },
+  { e: "\u{1F58C}\uFE0F", top: "57%", left: "38%", r: 16, op: 0.45 },
+  { e: "\u{1F308}", top: "72%", left: "55%", r: -8, op: 0.5 },
+  { e: "\u{1F392}", top: "73%", left: "26%", r: 10, op: 0.5 },
+  { e: "\u{1F524}", top: "88%", left: "44%", r: -12, op: 0.45 },
+  { e: "\u{1F9E9}", top: "89%", left: "68%", r: 8, op: 0.45 },
+  { e: "\u{1F388}", top: "16%", left: "84%", r: 6, op: 0.5 },
+  { e: "\u{1F98B}", top: "52%", left: "12%", r: -10, op: 0.45 }
 ];
+function rotateImage(dataUrl, degrees) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const rad = degrees * Math.PI / 180;
+      const swap = degrees % 180 !== 0;
+      const w = img.width;
+      const h = img.height;
+      const canvas = document.createElement("canvas");
+      canvas.width = swap ? h : w;
+      canvas.height = swap ? w : h;
+      const ctx = canvas.getContext("2d");
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -w / 2, -h / 2);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => reject(new Error("Could not rotate that image."));
+    img.src = dataUrl;
+  });
+}
+function orderEntries(entries, order) {
+  const pos = {};
+  (order || []).forEach((id, i) => pos[id] = i);
+  return [...entries].sort((a, b) => {
+    const pa = a.id in pos ? pos[a.id] : 1e9 + (a.createdAt || 0) / 1e15;
+    const pb = b.id in pos ? pos[b.id] : 1e9 + (b.createdAt || 0) / 1e15;
+    return pa - pb;
+  });
+}
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
@@ -213,8 +257,11 @@ function App() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [order, setOrder] = useState([]);
+  const [editChildId, setEditChildId] = useState(null);
   const teachers = config && config.teachers || DEFAULT_CONFIG.teachers;
   const currentTeacher = teachers.find((t) => t.key === activeTeacher) || teachers[0];
+  const orderedEntries = orderEntries(entries, order);
   async function loadEntries(silent) {
     if (!silent) setLoading(true);
     try {
@@ -232,6 +279,11 @@ function App() {
       }
       items.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
       setEntries(items);
+      try {
+        const o = await window.storage.get("order", true);
+        if (o && o.value) setOrder(JSON.parse(o.value));
+      } catch (e) {
+      }
     } catch (e) {
       if (!silent) setEntries([]);
     } finally {
@@ -354,16 +406,36 @@ function App() {
       window.removeEventListener("afterprint", restore);
     };
   }, [printMode]);
+  async function persistOrder(next) {
+    setOrder(next);
+    try {
+      await window.storage.set("order", JSON.stringify(next), true);
+    } catch (e) {
+    }
+  }
   async function addEntry(entry) {
     setEntries((prev) => [...prev, entry]);
+    const nextOrder = [...order.filter((id) => id !== entry.id), entry.id];
+    persistOrder(nextOrder);
     await window.storage.set("child:" + entry.id, JSON.stringify(entry), true);
   }
   async function deleteEntry(id) {
     setEntries((prev) => prev.filter((e) => e.id !== id));
+    persistOrder(order.filter((x) => x !== id));
     try {
       await window.storage.delete("child:" + id, true);
     } catch (e) {
     }
+  }
+  async function moveChild(id, dir) {
+    const ids = orderedEntries.map((e) => e.id);
+    const i = ids.indexOf(id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    const tmp = ids[i];
+    ids[i] = ids[j];
+    ids[j] = tmp;
+    await persistOrder(ids);
   }
   async function resetAll() {
     const current = entries;
@@ -385,7 +457,7 @@ function App() {
     }
   }
   function exportData() {
-    const data = { version: 1, config, pageStyle, entries };
+    const data = { version: 1, config, pageStyle, entries, order };
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -429,6 +501,13 @@ function App() {
           }
         }
       }
+      if (Array.isArray(data.order)) {
+        setOrder(data.order);
+        try {
+          await window.storage.set("order", JSON.stringify(data.order), true);
+        } catch (e) {
+        }
+      }
       return true;
     } catch (e) {
       return false;
@@ -439,7 +518,7 @@ function App() {
       ThankYouPage,
       {
         teacher: currentTeacher,
-        entries,
+        entries: orderedEntries,
         pageStyle,
         config,
         editable: false
@@ -464,37 +543,52 @@ function App() {
       onClick: () => setActiveTeacher(t.key)
     },
     t.name
-  ))), /* @__PURE__ */ React.createElement("div", { className: "bar-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: refresh, disabled: refreshing }, refreshing ? "Refreshing\u2026" : "\u21BB Refresh"), isAdmin && /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setShowTextPanel((s) => !s) }, "Text style"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => setPrintMode(true) }, "Print this page"))), isAdmin && showTextPanel && /* @__PURE__ */ React.createElement(TextStylePanel, { pageStyle, onChange: savePageStyle, onReset: () => savePageStyle(DEFAULT_STYLE) }), loading ? /* @__PURE__ */ React.createElement("div", { className: "loading" }, "Loading the children\u2026") : /* @__PURE__ */ React.createElement(React.Fragment, null, entries.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "page-hint no-print" }, "Tap a child's photo to reposition or zoom it."), /* @__PURE__ */ React.createElement("div", { id: "printArea" }, /* @__PURE__ */ React.createElement(
+  ))), /* @__PURE__ */ React.createElement("div", { className: "bar-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: refresh, disabled: refreshing }, refreshing ? "Refreshing\u2026" : "\u21BB Refresh"), isAdmin && /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setShowTextPanel((s) => !s) }, "Text style"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => setPrintMode(true) }, "Print this page"))), isAdmin && showTextPanel && /* @__PURE__ */ React.createElement(TextStylePanel, { pageStyle, onChange: savePageStyle, onReset: () => savePageStyle(DEFAULT_STYLE) }), loading ? /* @__PURE__ */ React.createElement("div", { className: "loading" }, "Loading the children\u2026") : /* @__PURE__ */ React.createElement(React.Fragment, null, entries.length > 0 && /* @__PURE__ */ React.createElement("p", { className: "page-hint no-print" }, "Tap a child's photo to reposition or zoom it.", isAdmin ? " Use the Manage tab to edit names, words, photos, and order." : ""), /* @__PURE__ */ React.createElement("div", { id: "printArea" }, /* @__PURE__ */ React.createElement(
     ThankYouPage,
     {
       teacher: currentTeacher,
-      entries,
+      entries: orderedEntries,
       pageStyle,
       config,
       editable: true,
       onEditPhoto: (c) => setEditingId(c.id)
     }
-  ))), editingId && /* @__PURE__ */ React.createElement(
-    PhotoEditor,
-    {
-      child: entries.find((e) => e.id === editingId),
-      onClose: () => setEditingId(null),
-      onSave: async (transform) => {
-        await updateChild(editingId, { transform });
-        setEditingId(null);
-      }
-    }
-  )), view === "manage" && isAdmin && /* @__PURE__ */ React.createElement("main", { className: "wrap no-print" }, /* @__PURE__ */ React.createElement(
+  )))), view === "manage" && isAdmin && /* @__PURE__ */ React.createElement("main", { className: "wrap no-print" }, /* @__PURE__ */ React.createElement(
     ManageView,
     {
-      entries,
+      entries: orderedEntries,
+      teachers,
       loading,
       onDelete: deleteEntry,
       onReset: resetAll,
       onExport: exportData,
-      onImport: importData
+      onImport: importData,
+      onMove: moveChild,
+      onEdit: (id) => setEditChildId(id),
+      onAdjust: (id) => setEditingId(id)
     }
-  )), view === "setup" && isAdmin && /* @__PURE__ */ React.createElement("main", { className: "wrap no-print" }, /* @__PURE__ */ React.createElement(ClassSetup, { config, onSave: (next) => saveConfig(next), onCancel: () => setView("pages") })));
+  )), view === "setup" && isAdmin && /* @__PURE__ */ React.createElement("main", { className: "wrap no-print" }, /* @__PURE__ */ React.createElement(ClassSetup, { config, onSave: (next) => saveConfig(next), onCancel: () => setView("pages") })), editingId && /* @__PURE__ */ React.createElement(
+    PhotoEditor,
+    {
+      child: entries.find((e) => e.id === editingId),
+      onClose: () => setEditingId(null),
+      onSave: async (patch) => {
+        await updateChild(editingId, patch);
+        setEditingId(null);
+      }
+    }
+  ), editChildId && isAdmin && /* @__PURE__ */ React.createElement(
+    EditChildModal,
+    {
+      child: entries.find((e) => e.id === editChildId),
+      teachers,
+      onClose: () => setEditChildId(null),
+      onSave: async (patch) => {
+        await updateChild(editChildId, patch);
+        setEditChildId(null);
+      }
+    }
+  ));
 }
 function AddChildForm({ onAdd, onDone, count, teachers }) {
   const [name, setName] = useState("");
@@ -616,6 +710,7 @@ function ThankYouPage({ teacher, entries, pageStyle = DEFAULT_STYLE, config = DE
         top: d.top,
         left: d.left,
         right: d.right,
+        opacity: d.op != null ? d.op : 0.92,
         transform: `rotate(${d.r}deg)`
       }
     },
@@ -682,16 +777,49 @@ function PhotoEditor({ child, onClose, onSave }) {
   const [zoom, setZoom] = useState(init.zoom);
   const [x, setX] = useState(init.x);
   const [y, setY] = useState(init.y);
+  const [photo, setPhoto] = useState(child && child.photo || "");
+  const [photoChanged, setPhotoChanged] = useState(false);
+  const [busy, setBusy] = useState(false);
   const frameRef = useRef(null);
   const dragRef = useRef(null);
+  const replaceRef = useRef(null);
   if (!child) return null;
   const panLimit = (zoom - 1) * 50;
   function setZoomClamped(z) {
-    const nz = clamp(z, 1, 3);
+    const nz = clamp(z, 1, 4);
     const m = (nz - 1) * 50;
     setZoom(nz);
     setX((px) => clamp(px, -m, m));
     setY((py) => clamp(py, -m, m));
+  }
+  function resetCrop() {
+    setZoom(1);
+    setX(0);
+    setY(0);
+  }
+  async function doRotate() {
+    setBusy(true);
+    try {
+      const rotated = await rotateImage(photo, 90);
+      setPhoto(rotated);
+      setPhotoChanged(true);
+      resetCrop();
+    } catch (e) {
+    }
+    setBusy(false);
+  }
+  async function doReplace(file) {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const data = await compressImage(file);
+      setPhoto(data);
+      setPhotoChanged(true);
+      resetCrop();
+    } catch (e) {
+    }
+    setBusy(false);
+    if (replaceRef.current) replaceRef.current.value = "";
   }
   function onDown(e) {
     e.preventDefault();
@@ -712,6 +840,11 @@ function PhotoEditor({ child, onClose, onSave }) {
   function onUp() {
     dragRef.current = null;
   }
+  function save() {
+    const patch = { transform: { zoom, x, y } };
+    if (photoChanged) patch.photo = photo;
+    onSave(patch);
+  }
   return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: onClose }, /* @__PURE__ */ React.createElement("div", { className: "modal", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("h3", { className: "modal-title" }, "Adjust ", child.name, "'s photo"), /* @__PURE__ */ React.createElement(
     "div",
     {
@@ -722,37 +855,82 @@ function PhotoEditor({ child, onClose, onSave }) {
       onPointerUp: onUp,
       onPointerCancel: onUp
     },
-    /* @__PURE__ */ React.createElement(
+    busy ? /* @__PURE__ */ React.createElement("div", { className: "editor-busy" }, /* @__PURE__ */ React.createElement("span", { className: "spinner" })) : /* @__PURE__ */ React.createElement(
       "img",
       {
-        src: child.photo,
+        src: photo,
         alt: child.name,
         draggable: false,
         style: { transform: `translate(${x}%, ${y}%) scale(${zoom})` }
       }
     )
-  ), /* @__PURE__ */ React.createElement("label", { className: "label small editor-label" }, "Zoom ", /* @__PURE__ */ React.createElement("span", { className: "tp-val" }, Math.round(zoom * 100), "%")), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement("div", { className: "editor-tools" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: doRotate, disabled: busy }, "\u21BB Rotate"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => replaceRef.current && replaceRef.current.click(), disabled: busy }, "Replace photo"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      ref: replaceRef,
+      type: "file",
+      accept: "image/*",
+      style: { display: "none" },
+      onChange: (e) => doReplace(e.target.files && e.target.files[0])
+    }
+  )), /* @__PURE__ */ React.createElement("label", { className: "label small editor-label" }, "Zoom ", /* @__PURE__ */ React.createElement("span", { className: "tp-val" }, Math.round(zoom * 100), "%")), /* @__PURE__ */ React.createElement(
     "input",
     {
       type: "range",
       min: "1",
-      max: "3",
+      max: "4",
       step: "0.02",
       value: zoom,
       onChange: (e) => setZoomClamped(parseFloat(e.target.value))
     }
-  ), /* @__PURE__ */ React.createElement("p", { className: "editor-hint" }, zoom > 1 ? "Drag the photo to reposition it." : "Zoom in first, then drag to reposition."), /* @__PURE__ */ React.createElement("div", { className: "editor-actions" }, /* @__PURE__ */ React.createElement(
-    "button",
+  ), /* @__PURE__ */ React.createElement("p", { className: "editor-hint" }, zoom > 1 ? "Drag the photo to reposition it." : "Zoom in first, then drag to reposition."), /* @__PURE__ */ React.createElement("div", { className: "editor-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: resetCrop, disabled: busy }, "Reset"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: save, disabled: busy }, "Save"))));
+}
+function EditChildModal({ child, teachers, onClose, onSave }) {
+  const [name, setName] = useState(child && child.name || "");
+  const [words, setWords] = useState(child && child.words || {});
+  const [photo, setPhoto] = useState(child && child.photo || "");
+  const [photoChanged, setPhotoChanged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const replaceRef = useRef(null);
+  if (!child) return null;
+  async function doReplace(file) {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const data = await compressImage(file);
+      setPhoto(data);
+      setPhotoChanged(true);
+    } catch (e) {
+    }
+    setBusy(false);
+    if (replaceRef.current) replaceRef.current.value = "";
+  }
+  function save() {
+    const patch = { name: name.trim() || child.name, words };
+    if (photoChanged) {
+      patch.photo = photo;
+      patch.transform = { zoom: 1, x: 0, y: 0 };
+    }
+    onSave(patch);
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "modal-backdrop", onClick: onClose }, /* @__PURE__ */ React.createElement("div", { className: "modal edit-modal", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("h3", { className: "modal-title" }, "Edit ", child.name), /* @__PURE__ */ React.createElement("div", { className: "edit-photo-row" }, /* @__PURE__ */ React.createElement("div", { className: "edit-photo" }, photo ? /* @__PURE__ */ React.createElement("img", { src: photo, alt: name }) : null), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => replaceRef.current && replaceRef.current.click(), disabled: busy }, busy ? "Working\u2026" : "Replace photo"), /* @__PURE__ */ React.createElement(
+    "input",
     {
-      className: "btn btn-ghost",
-      onClick: () => {
-        setZoom(1);
-        setX(0);
-        setY(0);
-      }
-    },
-    "Reset"
-  ), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: () => onSave({ zoom, x, y }) }, "Save"))));
+      ref: replaceRef,
+      type: "file",
+      accept: "image/*",
+      style: { display: "none" },
+      onChange: (e) => doReplace(e.target.files && e.target.files[0])
+    }
+  )), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "label small" }, "Name"), /* @__PURE__ */ React.createElement("input", { className: "input", value: name, onChange: (e) => setName(e.target.value), maxLength: 24 })), /* @__PURE__ */ React.createElement("div", { className: "field" }, /* @__PURE__ */ React.createElement("label", { className: "label small" }, "Word for each teacher"), teachers.map((t) => /* @__PURE__ */ React.createElement("div", { className: "edit-word-row", key: t.key }, /* @__PURE__ */ React.createElement("span", { className: "edit-word-teacher" }, t.name), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      className: "input",
+      value: words[t.key] || "",
+      onChange: (e) => setWords({ ...words, [t.key]: e.target.value }),
+      maxLength: 20
+    }
+  )))), /* @__PURE__ */ React.createElement("div", { className: "editor-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: save, disabled: busy }, "Save changes"))));
 }
 function ClassSetup({ config, onSave, onCancel, firstTime = false }) {
   const [title, setTitle] = useState(config.title || "");
@@ -846,7 +1024,7 @@ function PinModal({ onClose, onSubmit }) {
     }
   ), error && /* @__PURE__ */ React.createElement("div", { className: "error", style: { marginTop: 10 } }, "That PIN didn't match. Try again."), /* @__PURE__ */ React.createElement("div", { className: "editor-actions", style: { marginTop: 16 } }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: onClose }, "Cancel"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-primary", onClick: submit }, "Unlock"))));
 }
-function ManageView({ entries, loading, onDelete, onReset, onExport, onImport }) {
+function ManageView({ entries, teachers, loading, onDelete, onReset, onExport, onImport, onMove, onEdit, onAdjust }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const importRef = useRef(null);
@@ -856,7 +1034,7 @@ function ManageView({ entries, loading, onDelete, onReset, onExport, onImport })
     setImportMsg(ok ? "Backup loaded." : "That file couldn't be read.");
     if (importRef.current) importRef.current.value = "";
   }
-  return /* @__PURE__ */ React.createElement("div", { className: "panel" }, /* @__PURE__ */ React.createElement("h2", { className: "panel-title" }, "Manage entries"), /* @__PURE__ */ React.createElement("p", { className: "panel-note" }, "Remove a mistaken entry, or clear everything to start fresh."), loading ? /* @__PURE__ */ React.createElement("div", { className: "loading" }, "Loading\u2026") : entries.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "empty light" }, "No children added yet.") : /* @__PURE__ */ React.createElement("ul", { className: "manage-list" }, entries.map((c) => /* @__PURE__ */ React.createElement("li", { className: "manage-row", key: c.id }, /* @__PURE__ */ React.createElement("div", { className: "manage-photo" }, c.photo ? /* @__PURE__ */ React.createElement("img", { src: c.photo, alt: c.name }) : null), /* @__PURE__ */ React.createElement("div", { className: "manage-info" }, /* @__PURE__ */ React.createElement("div", { className: "manage-name" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "manage-words" }, [...new Set(Object.values(c.words || {}))].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger", onClick: () => onDelete(c.id) }, "Remove")))), entries.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "reset-zone" }, confirmReset ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", null, "Remove all ", entries.length, " children for everyone? This can't be undone."), /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger", onClick: () => {
+  return /* @__PURE__ */ React.createElement("div", { className: "panel" }, /* @__PURE__ */ React.createElement("h2", { className: "panel-title" }, "Manage entries"), /* @__PURE__ */ React.createElement("p", { className: "panel-note" }, "Edit any child's photo, name, or words, reorder them with the arrows, or remove an entry. The order here is the order they appear on the printed pages."), loading ? /* @__PURE__ */ React.createElement("div", { className: "loading" }, "Loading\u2026") : entries.length === 0 ? /* @__PURE__ */ React.createElement("div", { className: "empty light" }, "No children added yet.") : /* @__PURE__ */ React.createElement("ul", { className: "manage-list" }, entries.map((c, i) => /* @__PURE__ */ React.createElement("li", { className: "manage-row", key: c.id }, /* @__PURE__ */ React.createElement("div", { className: "manage-order" }, /* @__PURE__ */ React.createElement("button", { className: "order-btn", onClick: () => onMove(c.id, -1), disabled: i === 0, title: "Move up" }, "\u25B2"), /* @__PURE__ */ React.createElement("button", { className: "order-btn", onClick: () => onMove(c.id, 1), disabled: i === entries.length - 1, title: "Move down" }, "\u25BC")), /* @__PURE__ */ React.createElement("div", { className: "manage-photo" }, c.photo ? /* @__PURE__ */ React.createElement("img", { src: c.photo, alt: c.name }) : null), /* @__PURE__ */ React.createElement("div", { className: "manage-info" }, /* @__PURE__ */ React.createElement("div", { className: "manage-name" }, c.name), /* @__PURE__ */ React.createElement("div", { className: "manage-words" }, [...new Set(Object.values(c.words || {}))].filter(Boolean).join(" \xB7 "))), /* @__PURE__ */ React.createElement("div", { className: "manage-row-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => onEdit(c.id) }, "Edit"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost btn-sm", onClick: () => onAdjust(c.id) }, "Crop"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger btn-sm", onClick: () => onDelete(c.id) }, "Remove"))))), entries.length > 0 && /* @__PURE__ */ React.createElement("div", { className: "reset-zone" }, confirmReset ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", null, "Remove all ", entries.length, " children for everyone? This can't be undone."), /* @__PURE__ */ React.createElement("button", { className: "btn btn-danger", onClick: () => {
     onReset();
     setConfirmReset(false);
   } }, "Yes, clear all"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setConfirmReset(false) }, "Cancel")) : /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => setConfirmReset(true) }, "Clear all entries")), onExport && /* @__PURE__ */ React.createElement("div", { className: "backup-zone" }, /* @__PURE__ */ React.createElement("h3", { className: "backup-title" }, "Backup & restore"), /* @__PURE__ */ React.createElement("p", { className: "field-hint" }, "Data is saved in this browser only. Export a file to back it up or move it to another device, then import it there."), /* @__PURE__ */ React.createElement("div", { className: "backup-actions" }, /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: onExport }, "Export data"), /* @__PURE__ */ React.createElement("button", { className: "btn btn-ghost", onClick: () => importRef.current && importRef.current.click() }, "Import data"), /* @__PURE__ */ React.createElement(
@@ -1037,7 +1215,8 @@ const CSS = `
 }
 .page-inner { position: relative; padding: 5% 6%; height: 100%; display: flex; flex-direction: column; }
 
-.doodle { position: absolute; font-size: 26px; opacity: .92; pointer-events: none; }
+.doodle { position: absolute; font-size: 24px; pointer-events: none; z-index: 0; }
+.banner-row, .thankyou, .subhead, .grid { position: relative; z-index: 1; }
 
 .school-logo {
   position: absolute; top: 3.5%; right: 4.5%;
@@ -1170,9 +1349,28 @@ input[type="range"]::-moz-range-thumb {
 
 /* ---------- Manage ---------- */
 .manage-list { list-style: none; margin: 0; padding: 0; }
-.manage-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid #efe6d3; }
+.manage-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #efe6d3; flex-wrap: wrap; }
+.manage-order { display: flex; flex-direction: column; gap: 2px; flex: none; }
+.order-btn {
+  border: 1.5px solid #e3d9c4; background: #fffdf8; color: #6a6052; cursor: pointer;
+  width: 26px; height: 20px; border-radius: 6px; font-size: 10px; line-height: 1; padding: 0;
+}
+.order-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-deep); }
+.order-btn:disabled { opacity: .35; cursor: default; }
+.manage-row-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.btn-sm { font-size: 13px; padding: 7px 12px; }
 .manage-photo { width: 56px; height: 44px; border: 2px solid #2f2a26; border-radius: 4px; overflow: hidden; flex: none; background: #fff; }
 .manage-photo img { width: 100%; height: 100%; object-fit: cover; }
+
+.editor-tools { display: flex; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+.editor-busy { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.edit-modal { max-width: 420px; }
+.edit-photo-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.edit-photo { width: 84px; height: 64px; border: 2px solid #2f2a26; border-radius: 4px; overflow: hidden; flex: none; background: #fff; }
+.edit-photo img { width: 100%; height: 100%; object-fit: cover; }
+.edit-word-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.edit-word-teacher { flex: none; width: 120px; font-size: 13px; color: #6a6052; font-weight: 600; }
+.edit-word-row .input { flex: 1; }
 .manage-info { flex: 1; min-width: 0; }
 .manage-name { font-family: 'Fredoka'; font-weight: 600; font-size: 17px; }
 .manage-words { font-size: 13px; color: #8a8074; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
